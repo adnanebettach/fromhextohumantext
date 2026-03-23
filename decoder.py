@@ -33,6 +33,16 @@ TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523
 APPROVAL_TOPIC = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"
 # ERC-721 ApprovalForAll
 APPROVAL_FOR_ALL_TOPIC = "0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31"
+# ERC-1155 TransferSingle(operator, from, to, id, value)
+TRANSFER_SINGLE_TOPIC = "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62"
+# ERC-1155 TransferBatch(operator, from, to, ids, values)
+TRANSFER_BATCH_TOPIC = "0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb"
+# Flash loan event: FlashLoan(target, initiator, asset, amount, premium, referralCode)
+FLASH_LOAN_TOPIC = "0x631042c832b07452973831137f2d73e395028b44b250dedc5abb0ee766e168ac"
+
+# Known function selectors for special detection
+PERMIT_SELECTOR     = "0xd505accf"  # permit(address,address,uint256,uint256,uint8,bytes32,bytes32)
+MULTICALL_SELECTORS = {"0xac9650d8", "0x5ae401dc"}  # multicall(bytes[]), multicall(uint256,bytes[])
 
 # In-memory caches
 _SELECTOR_CACHE: dict[str, str]  = {}
@@ -58,6 +68,7 @@ PARAM_NAMES: dict[str, list[str]] = {
     "exactoutputsingle":         ["params"],
     "multicall":                 ["deadline", "data"],
     "setapprovalforall":         ["operator", "approved"],
+    "permit":                    ["owner", "spender", "value", "deadline", "v", "r", "s"],
 }
 
 # Risk score weights
@@ -71,6 +82,11 @@ RISK_WEIGHTS: dict[str, int] = {
     "zero_address_interaction":  50,
     "multi_token_drain":         70,
     "limited_approval":          10,
+    "erc1155_transfer":          15,
+    "permit_approval":           35,
+    "multicall":                 30,
+    "flash_loan":                25,
+    "contract_creation":         20,
 }
 
 
@@ -480,6 +496,122 @@ def parse_events(receipt: dict) -> list[dict]:
                 "is_nft":         True,
             })
 
+        # ── ERC-1155 TransferSingle ─────────────────────────────
+        elif t0 == TRANSFER_SINGLE_TOPIC and len(topics) >= 4:
+            from_addr = "0x" + topics[2][-40:]
+            to_addr   = "0x" + topics[3][-40:]
+            data_hex  = log.get("data", "0x")
+            token_id, value = 0, 0
+            if data_hex and data_hex != "0x" and len(data_hex) >= 130:
+                token_id = int(data_hex[2:66], 16)
+                value    = int(data_hex[66:130], 16)
+            sub_type = (
+                "erc1155_mint"     if _is_zero(from_addr) else
+                "erc1155_burn"     if _is_zero(to_addr)   else
+                "erc1155_transfer"
+            )
+            events.append({
+                "type":           sub_type,
+                "token_contract": address,
+                "symbol":         meta["symbol"],
+                "from":           from_addr,
+                "to":             to_addr,
+                "token_id":       str(token_id),
+                "raw_value":      value,
+                "raw_value_str":  str(value),
+                "amount_ui":      f"{value:,} × ID #{token_id}",
+                "decimals":       0,
+                "unlimited":      False,
+                "is_nft":         True,
+            })
+
+        # ── ERC-1155 TransferBatch ──────────────────────────────
+        elif t0 == TRANSFER_BATCH_TOPIC and len(topics) >= 4:
+            from_addr = "0x" + topics[2][-40:]
+            to_addr   = "0x" + topics[3][-40:]
+            sub_type = (
+                "erc1155_mint"     if _is_zero(from_addr) else
+                "erc1155_burn"     if _is_zero(to_addr)   else
+                "erc1155_transfer"
+            )
+            # Decode ids and values arrays from data if possible
+            batch_count = "multiple"
+            if abi_decode:
+                try:
+                    raw_data = bytes.fromhex(log.get("data", "0x")[2:])
+                    ids, vals = abi_decode(["uint256[]", "uint256[]"], raw_data)
+                    batch_count = str(len(ids))
+                    for tid, val in zip(ids, vals):
+                        events.append({
+                            "type":           sub_type,
+                            "token_contract": address,
+                            "symbol":         meta["symbol"],
+                            "from":           from_addr,
+                            "to":             to_addr,
+                            "token_id":       str(tid),
+                            "raw_value":      val,
+                            "raw_value_str":  str(val),
+                            "amount_ui":      f"{val:,} × ID #{tid}",
+                            "decimals":       0,
+                            "unlimited":      False,
+                            "is_nft":         True,
+                        })
+                except Exception:
+                    events.append({
+                        "type":           sub_type,
+                        "token_contract": address,
+                        "symbol":         meta["symbol"],
+                        "from":           from_addr,
+                        "to":             to_addr,
+                        "token_id":       None,
+                        "raw_value":      0,
+                        "raw_value_str":  "batch",
+                        "amount_ui":      f"Batch ({batch_count} tokens)",
+                        "decimals":       0,
+                        "unlimited":      False,
+                        "is_nft":         True,
+                    })
+            else:
+                events.append({
+                    "type":           sub_type,
+                    "token_contract": address,
+                    "symbol":         meta["symbol"],
+                    "from":           from_addr,
+                    "to":             to_addr,
+                    "token_id":       None,
+                    "raw_value":      0,
+                    "raw_value_str":  "batch",
+                    "amount_ui":      f"Batch ({batch_count} tokens)",
+                    "decimals":       0,
+                    "unlimited":      False,
+                    "is_nft":         True,
+                })
+
+        # ── Flash loan event ────────────────────────────────────
+        elif t0 == FLASH_LOAN_TOPIC:
+            data_hex = log.get("data", "0x")
+            asset_addr = "0x" + topics[2][-40:] if len(topics) > 2 else address
+            fl_meta = get_token_metadata(asset_addr)
+            amount, premium = 0, 0
+            if data_hex and data_hex != "0x" and len(data_hex) >= 130:
+                amount  = int(data_hex[2:66], 16)
+                premium = int(data_hex[66:130], 16)
+            dec = fl_meta["decimals"] or 18
+            events.append({
+                "type":           "flash_loan",
+                "token_contract": asset_addr,
+                "symbol":         fl_meta["symbol"],
+                "from":           address,
+                "to":             "0x" + topics[1][-40:] if len(topics) > 1 else "—",
+                "token_id":       None,
+                "raw_value":      amount,
+                "raw_value_str":  str(amount),
+                "amount_ui":      f"{amount / (10**dec):,.6f} (fee: {premium / (10**dec):,.6f})",
+                "decimals":       dec,
+                "unlimited":      False,
+                "is_nft":         False,
+            })
+
     return events
 
 
@@ -487,8 +619,28 @@ def parse_events(receipt: dict) -> list[dict]:
 #  Classification
 # ─────────────────────────────────────────────
 
-def classify_transaction(function_sig: str, events: list[dict]) -> str:
+def classify_transaction(
+    function_sig: str,
+    events: list[dict],
+    calldata: str = "",
+    to_addr: str = "",
+) -> str:
     sig = (function_sig or "").lower()
+
+    # Contract creation: to is null/empty
+    if not to_addr or to_addr == "—":
+        return "contract_creation"
+
+    # Permit (ERC-2612)
+    if sig.startswith("permit("):
+        return "permit"
+    selector = calldata[:10].lower() if calldata and len(calldata) >= 10 else ""
+    if selector == PERMIT_SELECTOR:
+        return "permit"
+
+    # Multicall
+    if sig.startswith("multicall(") or selector in MULTICALL_SELECTORS:
+        return "multicall"
 
     if sig.startswith("approve("):            return "erc20_approval"
     if sig.startswith("setapprovalforall("):  return "nft_approval_for_all"
@@ -504,10 +656,12 @@ def classify_transaction(function_sig: str, events: list[dict]) -> str:
 
     # Infer from events when function name is unclear
     types = {e["type"] for e in events}
+    if "flash_loan" in types:                return "flash_loan"
     if "approval_for_all" in types:          return "nft_approval_for_all"
     if "nft_transfer" in types:              return "nft_transfer"
     if "nft_mint"     in types:              return "mint"
     if "erc20_approval" in types:            return "erc20_approval"
+    if any(t.startswith("erc1155") for t in types): return "erc1155_transfer"
     if "erc20_transfer" in types or "erc20_mint" in types or "erc20_burn" in types:
         return "erc20_transfer"
 
@@ -563,8 +717,29 @@ def compute_risk(
     if tx_type == "nft_transfer":
         flags.append("nft_transfer")
 
+    # ERC-1155 transfer risk
+    if tx_type == "erc1155_transfer":
+        flags.append("erc1155_transfer")
+
+    # Permit (ERC-2612) — gasless approval
+    if tx_type == "permit":
+        flags.append("permit_approval")
+
+    # Multicall — bundled operations
+    if tx_type == "multicall":
+        flags.append("multicall")
+
+    # Flash loan
+    if tx_type == "flash_loan" or any(e["type"] == "flash_loan" for e in events):
+        flags.append("flash_loan")
+
+    # Contract creation
+    if tx_type == "contract_creation":
+        flags.append("contract_creation")
+
     # Zero address interaction (other than mint/burn)
-    if tx_type not in ("mint", "burn", "erc20_mint", "erc20_burn", "nft_mint", "nft_burn"):
+    if tx_type not in ("mint", "burn", "erc20_mint", "erc20_burn", "nft_mint", "nft_burn",
+                       "contract_creation"):
         if _is_zero(to_addr):
             flags.append("zero_address_interaction")
 
@@ -698,6 +873,47 @@ def build_plain_english(
     if tx_type == "eth_transfer":
         return f"You sent {value_eth:.6f} ETH from {from_s} to {to_s}."
 
+    if tx_type == "contract_creation":
+        return (
+            f"You deployed a new smart contract from {from_s}. "
+            "The contract is now live on-chain at the address shown in the receipt."
+        )
+
+    if tx_type == "permit":
+        symbol  = approvals[0]["symbol"] if approvals else "tokens"
+        spender = shorten(function_params.get("spender", "—"))
+        return (
+            f"You executed a gasless permit (ERC-2612) granting {spender} "
+            f"permission to spend your {symbol}. This uses an off-chain signature "
+            "replayed on-chain — no separate approve() transaction was needed."
+        )
+
+    if tx_type == "multicall":
+        n = len(events)
+        return (
+            f"You executed a multicall bundle on {to_s} containing multiple sub-actions. "
+            f"{n} event(s) were emitted. Check the Transfers table for the full breakdown."
+        )
+
+    if tx_type == "flash_loan":
+        fl = [e for e in events if e["type"] == "flash_loan"]
+        if fl:
+            return (
+                f"You executed a flash loan of {fl[0]['amount_ui']} {fl[0]['symbol']} "
+                f"from {shorten(fl[0]['from'])}. The loan was repaid within the same transaction."
+            )
+        return "You executed a flash loan — borrowed and repaid within a single transaction."
+
+    if tx_type == "erc1155_transfer":
+        erc1155 = [e for e in events if e["type"].startswith("erc1155")]
+        if erc1155:
+            t = erc1155[0]
+            return (
+                f"You transferred ERC-1155 token(s) ({t['symbol']}) "
+                f"{t['amount_ui']} from {shorten(t['from'])} to {shorten(t['to'])}."
+            )
+        return "ERC-1155 multi-token transfer was executed."
+
     return (
         f"You called `{function_sig}` on contract {to_s}. "
         "The decoder could not produce a more specific explanation for this interaction."
@@ -778,6 +994,38 @@ def build_expected_actual(
             "Tokens were burned (sent to zero address) and removed from circulation.",
         )
 
+    if tx_type == "contract_creation":
+        return (
+            "You expected to deploy a new smart contract.",
+            "A new contract was deployed on-chain. It is now live and callable.",
+        )
+
+    if tx_type == "permit":
+        symbol = approvals[0]["symbol"] if approvals else "tokens"
+        return (
+            f"You expected to approve {symbol} spending via a gasless signature.",
+            f"A permit was executed on-chain — {symbol} spending is now approved "
+            "without a separate approve() transaction.",
+        )
+
+    if tx_type == "multicall":
+        return (
+            "You expected to execute multiple actions in a single transaction.",
+            "A multicall bundle was executed. Review each sub-action in the events table.",
+        )
+
+    if tx_type == "flash_loan":
+        return (
+            "You expected to borrow and repay tokens within one transaction.",
+            "A flash loan was executed — tokens were borrowed and repaid atomically.",
+        )
+
+    if tx_type == "erc1155_transfer":
+        return (
+            "You expected to transfer ERC-1155 multi-token assets.",
+            "ERC-1155 tokens were transferred. Verify the recipient and token IDs.",
+        )
+
     return (
         "You expected the transaction to do what the interface described.",
         "The transaction executed. Check the decoded action and events for details.",
@@ -818,7 +1066,7 @@ def decode_transaction(tx_hash: str) -> dict:
     function_sig    = decode_function_signature(calldata, contract_addr)
     function_params = decode_function_params(calldata, function_sig)
     events          = parse_events(receipt)
-    tx_type         = classify_transaction(function_sig, events)
+    tx_type         = classify_transaction(function_sig, events, calldata, contract_addr)
     risk_flags, risk_score = compute_risk(tx_type, events, function_params, contract_addr)
     plain_english   = build_plain_english(
         tx, tx_type, function_sig, events, function_params, risk_flags, status

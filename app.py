@@ -48,7 +48,12 @@ with st.sidebar:
         "erc20_approval":      "ERC-20 spend approval",
         "nft_transfer":        "ERC-721 NFT transfer",
         "nft_approval_for_all":"ERC-721 full collection approval",
+        "erc1155_transfer":    "ERC-1155 multi-token transfer",
         "dex_swap":            "DEX token swap",
+        "permit":              "Gasless permit (ERC-2612)",
+        "multicall":           "Multicall bundle",
+        "flash_loan":          "Flash loan",
+        "contract_creation":   "Contract deployment",
         "mint":                "Token minting",
         "burn":                "Token burning",
         "deposit":             "Contract deposit",
@@ -141,6 +146,10 @@ def event_type_badge(etype: str) -> str:
         "nft_burn":            "🔥 NFT Burn",
         "nft_approval":        "🟠 NFT Approval",
         "approval_for_all":    "🚨 Approval For All",
+        "erc1155_transfer":    "🔷 ERC-1155 Transfer",
+        "erc1155_mint":        "🟢 ERC-1155 Mint",
+        "erc1155_burn":        "🔥 ERC-1155 Burn",
+        "flash_loan":          "⚡ Flash Loan",
     }
     return badges.get(etype, f"❓ {etype}")
 

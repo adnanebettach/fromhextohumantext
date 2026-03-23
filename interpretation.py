@@ -49,6 +49,31 @@ RISK_DESCRIPTIONS: dict[str, str] = {
         "This pattern is common in multi-asset drainer contracts and phishing attacks. "
         "Verify each token movement carefully before proceeding."
     ),
+    "erc1155_transfer": (
+        "An ERC-1155 multi-token transfer was detected. "
+        "ERC-1155 tokens can represent both fungible and non-fungible assets in a single contract. "
+        "Verify the token IDs and quantities are what you expected."
+    ),
+    "permit_approval": (
+        "A gasless permit (ERC-2612) was executed, granting token spending permission "
+        "via an off-chain signature replayed on-chain. This bypasses the normal approve() flow "
+        "and can be harder to detect — always verify the spender address."
+    ),
+    "multicall": (
+        "A multicall bundle was executed, combining multiple contract calls into one transaction. "
+        "While efficient, this can obscure individual actions. Review each sub-action carefully "
+        "to ensure nothing unexpected was included."
+    ),
+    "flash_loan": (
+        "A flash loan was executed — tokens were borrowed and repaid within a single transaction. "
+        "Flash loans are used for arbitrage, liquidations, and collateral swaps. "
+        "Malicious flash loans can manipulate prices or exploit vulnerable contracts."
+    ),
+    "contract_creation": (
+        "A new smart contract was deployed in this transaction. "
+        "The contract code is now permanently on-chain. Verify the deployer is trusted "
+        "and the contract source is verified on the block explorer."
+    ),
 }
 
 # Advice to display alongside each flag in the UI
@@ -62,6 +87,11 @@ RISK_ADVICE: dict[str, str] = {
     "unknown_function":         "👉 Do not proceed unless you sourced this transaction yourself.",
     "zero_address_interaction": "👉 Stop and verify this is intentional before signing.",
     "multi_token_drain":        "👉 Do not sign — this matches known drainer contract patterns.",
+    "erc1155_transfer":         "👉 Verify the token IDs and quantities before confirming.",
+    "permit_approval":          "👉 Check the spender address — permits can be replayed from phishing signatures.",
+    "multicall":                "👉 Inspect each sub-call individually before signing.",
+    "flash_loan":               "👉 Ensure the flash loan logic is from a trusted source.",
+    "contract_creation":        "👉 Verify the contract source code is published and audited.",
 }
 
 # Color theme per risk band (used by app.py for styling)
@@ -183,6 +213,31 @@ def summarize_risk(risk_flags: list[str], risk_score: int) -> str:
         return (
             f"🟡 {band} — This transaction interacts with a smart contract. "
             "Verify the contract address before signing."
+        )
+    if "permit_approval" in risk_flags:
+        return (
+            f"🟡 {band} — A gasless permit was used to approve token spending. "
+            "Verify the spender is legitimate — permits can be replayed from phishing signatures."
+        )
+    if "multicall" in risk_flags:
+        return (
+            f"🟡 {band} — A multicall bundle was executed. "
+            "Review each sub-action to ensure nothing unexpected was included."
+        )
+    if "flash_loan" in risk_flags:
+        return (
+            f"🟡 {band} — A flash loan was executed within this transaction. "
+            "Ensure the logic is from a trusted and audited source."
+        )
+    if "erc1155_transfer" in risk_flags:
+        return (
+            f"🟡 {band} — ERC-1155 multi-token assets were transferred. "
+            "Verify token IDs and quantities are correct."
+        )
+    if "contract_creation" in risk_flags:
+        return (
+            f"🟡 {band} — A new smart contract was deployed. "
+            "Verify the deployer and check if the source is published."
         )
 
     return f"{band} — Score: {risk_score}/100. Review the flags below for details."
